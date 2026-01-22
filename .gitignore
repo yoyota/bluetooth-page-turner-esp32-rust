@@ -1,0 +1,22 @@
+# Rust
+/target/
+Cargo.lock
+
+# ESP-IDF build artifacts
+/.embuild/
+/sdkconfig
+/sdkconfig.old
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
