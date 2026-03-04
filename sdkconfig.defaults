@@ -1,22 +1,13 @@
 # Rust often needs a bit of extra main task stack size compared to C
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
 
-# Enable BLE with Bluedroid
+# Enable BLE with NimBLE (required by esp32-nimble)
 CONFIG_BT_ENABLED=y
-CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_BLE_ENABLED=y
-CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+
 CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
-
-# BT Controller settings
-CONFIG_BTDM_CTRL_BLE_MAX_CONN=3
-CONFIG_BTDM_CTRL_HLI=y
-
-# Enable HID device
-CONFIG_BT_HID_DEVICE_ENABLED=y
-
-# Increase memory for BLE
-CONFIG_BT_BTU_TASK_STACK_SIZE=4096
 CONFIG_BTDM_CTRL_PINNED_TO_CORE=0
 
 # Use default partition table

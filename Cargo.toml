@@ -12,9 +12,10 @@ debug = true
 opt-level = "z"
 
 [dependencies]
-esp-idf-svc = { version = "0.50", features = ["binstart", "critical-section"] }
+esp-idf-svc = { version = "0.51", features = ["binstart", "critical-section"] }
 esp-idf-hal = "0.45"
 esp-idf-sys = { version = "0.36", features = ["binstart"] }
+esp32-nimble = "0.11"
 log = "0.4"
 embedded-hal = "1.0"
 anyhow = "1"

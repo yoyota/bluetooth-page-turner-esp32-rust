@@ -2,7 +2,7 @@ use esp_idf_hal::gpio::PinDriver;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::log::EspLogger;
 use esp_idf_sys as _;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::time::Duration;
 
 mod ble_hid;
@@ -36,8 +36,7 @@ fn main() -> anyhow::Result<()> {
     }
     info!("Touch sensor initialized on GPIO4");
 
-    let mut keyboard = BleKeyboard::new("BLE PageTurner")?;
-    keyboard.start()?;
+    let keyboard = BleKeyboard::new("BLE PageTurner")?;
 
     info!("BLE Keyboard initialized. Waiting for connection...");
 
@@ -72,7 +71,7 @@ fn main() -> anyhow::Result<()> {
                 &mut touch_val,
             );
         }
-        info!("Touch  value! (val: {})", touch_val);
+        debug!("Touch  value! (val: {})", touch_val);
 
         let touched = touch_val < TOUCH_THRESHOLD;
         if touched && !was_touched {
