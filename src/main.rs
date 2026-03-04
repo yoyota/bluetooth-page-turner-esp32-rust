@@ -1,4 +1,4 @@
-use esp_idf_hal::gpio::{PinDriver, Pull};
+use esp_idf_hal::gpio::PinDriver;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::log::EspLogger;
 use esp_idf_sys as _;
@@ -9,13 +9,9 @@ mod ble_hid;
 
 use ble_hid::BleKeyboard;
 
-// HID Keyboard scan codes for page turning
-const KEY_PAGE_UP: u8 = 0x4B;
 const KEY_PAGE_DOWN: u8 = 0x4E;
-#[allow(dead_code)]
-const KEY_LEFT_ARROW: u8 = 0x50;
-#[allow(dead_code)]
-const KEY_RIGHT_ARROW: u8 = 0x4F;
+
+const TOUCH_THRESHOLD: u16 = 400;
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -24,59 +20,70 @@ fn main() -> anyhow::Result<()> {
     info!("Starting BLE Page Turner Keyboard");
 
     let peripherals = Peripherals::take()?;
+    let mut led = PinDriver::output(peripherals.pins.gpio2)?;
 
-    // Configure GPIO buttons for page navigation
-    // GPIO0 - Previous page (built-in BOOT button on most ESP32 boards)
-    // GPIO32 - Next page (supports internal pull-up, unlike GPIO35 which is input-only)
-    let btn_prev = PinDriver::input(peripherals.pins.gpio0)?;
-    let mut btn_next = PinDriver::input(peripherals.pins.gpio32)?;
-    btn_next.set_pull(Pull::Up)?;
+    unsafe {
+        esp_idf_sys::touch_pad_init();
+        esp_idf_sys::touch_pad_set_voltage(
+            esp_idf_sys::touch_high_volt_t_TOUCH_HVOLT_2V7,
+            esp_idf_sys::touch_low_volt_t_TOUCH_LVOLT_0V5,
+            esp_idf_sys::touch_volt_atten_t_TOUCH_HVOLT_ATTEN_1V,
+        );
+        esp_idf_sys::touch_pad_config(
+            esp_idf_sys::touch_pad_t_TOUCH_PAD_NUM0,
+            0,
+        );
+    }
+    info!("Touch sensor initialized on GPIO4");
 
-    // Initialize BLE HID keyboard
     let mut keyboard = BleKeyboard::new("BLE PageTurner")?;
     keyboard.start()?;
 
     info!("BLE Keyboard initialized. Waiting for connection...");
 
-    let mut prev_pressed = false;
-    let mut next_pressed = false;
+    let mut was_touched = false;
+    let mut was_connected = false;
 
     loop {
-        // Check connection status
-        if !keyboard.is_connected() {
+        let connected = keyboard.is_connected();
+        if !connected {
+            was_connected = false;
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
 
-        // Previous page button (active low)
-        let prev_state = btn_prev.is_low();
-        if prev_state && !prev_pressed {
-            info!("Previous page pressed");
-            if let Err(e) = keyboard.send_key(KEY_PAGE_UP) {
-                warn!("Failed to send key: {:?}", e);
+        // Blink LED 5 times on new connection
+        if !was_connected {
+            info!("BLE connected, blinking LED");
+            for _ in 0..5 {
+                led.set_high().ok();
+                std::thread::sleep(Duration::from_millis(200));
+                led.set_low().ok();
+                std::thread::sleep(Duration::from_millis(200));
             }
+            was_connected = true;
         }
-        prev_pressed = prev_state;
 
-        // Next page button (active low)
-        let next_state = btn_next.is_low();
-        if next_state && !next_pressed {
-            info!("Next page pressed");
+        // Touch sensor - next page
+        let mut touch_val: u16 = 0;
+        unsafe {
+            esp_idf_sys::touch_pad_read(
+                esp_idf_sys::touch_pad_t_TOUCH_PAD_NUM0,
+                &mut touch_val,
+            );
+        }
+        info!("Touch  value! (val: {})", touch_val);
+
+        let touched = touch_val < TOUCH_THRESHOLD;
+        if touched && !was_touched {
+            info!("Touch detected (val: {})", touch_val);
             if let Err(e) = keyboard.send_key(KEY_PAGE_DOWN) {
                 warn!("Failed to send key: {:?}", e);
             }
+            std::thread::sleep(Duration::from_millis(2000));
         }
-        next_pressed = next_state;
-        // if let Err(e) = keyboard.send_key(KEY_PAGE_DOWN) {
-        //     warn!("Failed to send key: {:?}", e);
-        // }
+        was_touched = touched;
 
-        // std::thread::sleep(Duration::from_secs(5));
-
-        // if let Err(e) = keyboard.send_key(KEY_PAGE_UP) {
-        //     warn!("Failed to send key: {:?}", e);
-        // }
-
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(200));
     }
 }

@@ -1,8 +1,8 @@
 use esp_idf_sys::*;
 use log::info;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 
 static CONNECTED: AtomicBool = AtomicBool::new(false);
 static CONN_ID: AtomicU16 = AtomicU16::new(0);
@@ -23,8 +23,6 @@ const HID_INFO_UUID: u16 = 0x2A4A;
 const HID_CONTROL_POINT_UUID: u16 = 0x2A4C;
 // Client Characteristic Configuration Descriptor UUID: 0x2902
 const CCC_DESCRIPTOR_UUID: u16 = 0x2902;
-// Report Reference Descriptor UUID: 0x2908
-const REPORT_REF_DESCRIPTOR_UUID: u16 = 0x2908;
 
 // HID Report Descriptor for a keyboard
 const HID_REPORT_MAP: &[u8] = &[
@@ -51,7 +49,7 @@ const HID_REPORT_MAP: &[u8] = &[
     0x19, 0x00, //   Usage Minimum (0)
     0x29, 0x65, //   Usage Maximum (101)
     0x81, 0x00, //   Input (Data, Array) - Key array (6 keys)
-    0xC0,       // End Collection
+    0xC0, // End Collection
 ];
 
 // HID Information: bcdHID (1.11), bCountryCode (0), Flags (RemoteWake, NormallyConnectable)
@@ -74,7 +72,9 @@ impl BleKeyboard {
         unsafe {
             // Initialize NVS
             let ret = nvs_flash_init();
-            if ret == ESP_ERR_NVS_NO_FREE_PAGES as i32 || ret == ESP_ERR_NVS_NEW_VERSION_FOUND as i32 {
+            if ret == ESP_ERR_NVS_NO_FREE_PAGES as i32
+                || ret == ESP_ERR_NVS_NEW_VERSION_FOUND as i32
+            {
                 esp_err_t_to_result(nvs_flash_erase())?;
                 esp_err_t_to_result(nvs_flash_init())?;
             }
@@ -90,7 +90,7 @@ impl BleKeyboard {
                 scan_duplicate_type: 0,
                 normal_adv_size: 20,
                 mesh_adv_size: 0,
-                send_adv_reserved_size: 1000,  // SCAN_SEND_ADV_RESERVED_SIZE
+                send_adv_reserved_size: 1000, // SCAN_SEND_ADV_RESERVED_SIZE
                 controller_debug_flag: 0,
                 mode: esp_bt_mode_t_ESP_BT_MODE_BLE as u8,
                 ble_max_conn: 3,
@@ -99,37 +99,68 @@ impl BleKeyboard {
                 auto_latency: false,
                 bt_legacy_auth_vs_evt: false,
                 bt_max_sync_conn: 0,
-                ble_sca: 0,  // ESP_BLE_SCA_500PPM
+                ble_sca: 0, // ESP_BLE_SCA_500PPM
                 pcm_role: 0,
                 pcm_polar: 0,
-                hli: true,  // High Level Interrupt enabled
+                hli: true, // High Level Interrupt enabled
                 dup_list_refresh_period: 0,
                 ble_scan_backoff: false,
                 magic: ESP_BT_CONTROLLER_CONFIG_MAGIC_VAL,
             };
 
             esp_err_t_to_result(esp_bt_controller_init(&mut bt_cfg))?;
-            esp_err_t_to_result(esp_bt_controller_enable(esp_bt_mode_t_ESP_BT_MODE_BLE))?;
+            esp_err_t_to_result(esp_bt_controller_enable(
+                esp_bt_mode_t_ESP_BT_MODE_BLE,
+            ))?;
             esp_err_t_to_result(esp_bluedroid_init())?;
             esp_err_t_to_result(esp_bluedroid_enable())?;
 
+            // Clear all bonded devices on startup
+            let bond_num = esp_ble_get_bond_device_num();
+            if bond_num > 0 {
+                info!("Found {} bonded devices, removing...", bond_num);
+                let mut dev_list: Vec<esp_ble_bond_dev_t> =
+                    vec![Default::default(); bond_num as usize];
+                let mut actual_num = bond_num;
+                let ret = esp_ble_get_bond_device_list(
+                    &mut actual_num,
+                    dev_list.as_mut_ptr(),
+                );
+                if ret == ESP_OK as i32 {
+                    for i in 0..actual_num as usize {
+                        esp_ble_remove_bond_device(
+                            dev_list[i].bd_addr.as_mut_ptr(),
+                        );
+                    }
+                    info!("Cleared {} bonded devices", actual_num);
+                }
+            }
+
             // Register callbacks
-            esp_err_t_to_result(esp_ble_gatts_register_callback(Some(gatts_event_handler)))?;
-            esp_err_t_to_result(esp_ble_gap_register_callback(Some(gap_event_handler)))?;
+            esp_err_t_to_result(esp_ble_gatts_register_callback(Some(
+                gatts_event_handler,
+            )))?;
+            esp_err_t_to_result(esp_ble_gap_register_callback(Some(
+                gap_event_handler,
+            )))?;
 
             // Register GATT application
             esp_err_t_to_result(esp_ble_gatts_app_register(HID_APP_ID))?;
 
             // Set device name
-            esp_err_t_to_result(esp_ble_gap_set_device_name(self.device_name.as_ptr()))?;
+            esp_err_t_to_result(esp_ble_gap_set_device_name(
+                self.device_name.as_ptr(),
+            ))?;
 
             // Configure security
             // ESP_LE_AUTH_BOND = 0x01
             let auth_req: u8 = 0x01;
             // ESP_IO_CAP_NONE = 3
             let iocap: u8 = 3;
-            let init_key: u8 = ESP_BLE_ENC_KEY_MASK as u8 | ESP_BLE_ID_KEY_MASK as u8;
-            let rsp_key: u8 = ESP_BLE_ENC_KEY_MASK as u8 | ESP_BLE_ID_KEY_MASK as u8;
+            let init_key: u8 =
+                ESP_BLE_ENC_KEY_MASK as u8 | ESP_BLE_ID_KEY_MASK as u8;
+            let rsp_key: u8 =
+                ESP_BLE_ENC_KEY_MASK as u8 | ESP_BLE_ID_KEY_MASK as u8;
             let key_size: u8 = 16;
 
             esp_ble_gap_set_security_param(
@@ -240,7 +271,8 @@ fn start_advertising() {
             p_service_data: ptr::null_mut(),
             service_uuid_len: 0,
             p_service_uuid: ptr::null_mut(),
-            flag: (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT) as u8,
+            flag: (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT)
+                as u8,
         };
 
         esp_ble_gap_config_adv_data(&mut adv_data);
@@ -257,7 +289,8 @@ fn start_advertising_now() {
             peer_addr: [0; 6],
             peer_addr_type: esp_ble_addr_type_t_BLE_ADDR_TYPE_PUBLIC,
             channel_map: esp_ble_adv_channel_t_ADV_CHNL_ALL,
-            adv_filter_policy: esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+            adv_filter_policy:
+                esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
         };
         esp_ble_gap_start_advertising(&adv_params as *const _ as *mut _);
     }
@@ -279,7 +312,10 @@ unsafe extern "C" fn gap_event_handler(
             info!("Security request received");
             if !param.is_null() {
                 let p = &(*param).ble_security;
-                esp_ble_gap_security_rsp(p.ble_req.bd_addr.as_ptr() as *mut u8, true);
+                esp_ble_gap_security_rsp(
+                    p.ble_req.bd_addr.as_ptr() as *mut u8,
+                    true,
+                );
             }
         }
         esp_gap_ble_cb_event_t_ESP_GAP_BLE_AUTH_CMPL_EVT => {
@@ -305,7 +341,9 @@ unsafe extern "C" fn gatts_event_handler(
             // Create HID service
             let service_uuid = esp_bt_uuid_t {
                 len: 2,
-                uuid: esp_bt_uuid_t__bindgen_ty_1 { uuid16: HID_SERVICE_UUID },
+                uuid: esp_bt_uuid_t__bindgen_ty_1 {
+                    uuid16: HID_SERVICE_UUID,
+                },
             };
 
             let mut srvc_id = esp_gatt_srvc_id_t {
@@ -335,7 +373,9 @@ unsafe extern "C" fn gatts_event_handler(
                 // Add HID Report Map characteristic
                 let mut char_uuid = esp_bt_uuid_t {
                     len: 2,
-                    uuid: esp_bt_uuid_t__bindgen_ty_1 { uuid16: HID_REPORT_MAP_UUID },
+                    uuid: esp_bt_uuid_t__bindgen_ty_1 {
+                        uuid16: HID_REPORT_MAP_UUID,
+                    },
                 };
                 esp_ble_gatts_add_char(
                     p.service_handle,
@@ -356,13 +396,16 @@ unsafe extern "C" fn gatts_event_handler(
 
                 if char_uuid == HID_REPORT_MAP_UUID {
                     // Store Report Map handle
-                    HID_REPORT_MAP_HANDLE.store(p.attr_handle, Ordering::Relaxed);
+                    HID_REPORT_MAP_HANDLE
+                        .store(p.attr_handle, Ordering::Relaxed);
                     info!("HID Report Map handle: {}", p.attr_handle);
 
                     // Add HID Information characteristic
                     let mut info_uuid = esp_bt_uuid_t {
                         len: 2,
-                        uuid: esp_bt_uuid_t__bindgen_ty_1 { uuid16: HID_INFO_UUID },
+                        uuid: esp_bt_uuid_t__bindgen_ty_1 {
+                            uuid16: HID_INFO_UUID,
+                        },
                     };
                     esp_ble_gatts_add_char(
                         p.service_handle,
@@ -380,7 +423,9 @@ unsafe extern "C" fn gatts_event_handler(
                     // Add HID Control Point characteristic
                     let mut ctrl_uuid = esp_bt_uuid_t {
                         len: 2,
-                        uuid: esp_bt_uuid_t__bindgen_ty_1 { uuid16: HID_CONTROL_POINT_UUID },
+                        uuid: esp_bt_uuid_t__bindgen_ty_1 {
+                            uuid16: HID_CONTROL_POINT_UUID,
+                        },
                     };
                     esp_ble_gatts_add_char(
                         p.service_handle,
@@ -394,25 +439,34 @@ unsafe extern "C" fn gatts_event_handler(
                     // Add HID Report characteristic (keyboard input)
                     let mut report_uuid = esp_bt_uuid_t {
                         len: 2,
-                        uuid: esp_bt_uuid_t__bindgen_ty_1 { uuid16: HID_REPORT_CHAR_UUID },
+                        uuid: esp_bt_uuid_t__bindgen_ty_1 {
+                            uuid16: HID_REPORT_CHAR_UUID,
+                        },
                     };
                     esp_ble_gatts_add_char(
                         p.service_handle,
                         &mut report_uuid,
                         (ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE) as u16,
-                        (ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY) as u8,
+                        (ESP_GATT_CHAR_PROP_BIT_READ
+                            | ESP_GATT_CHAR_PROP_BIT_NOTIFY)
+                            as u8,
                         ptr::null_mut(),
                         ptr::null_mut(),
                     );
                 } else if char_uuid == HID_REPORT_CHAR_UUID {
                     // Store the report handle for sending data
                     HID_REPORT_HANDLE.store(p.attr_handle, Ordering::Relaxed);
-                    info!("HID Report characteristic handle: {}", p.attr_handle);
+                    info!(
+                        "HID Report characteristic handle: {}",
+                        p.attr_handle
+                    );
 
                     // Add CCC descriptor for notifications
                     let mut ccc_uuid = esp_bt_uuid_t {
                         len: 2,
-                        uuid: esp_bt_uuid_t__bindgen_ty_1 { uuid16: CCC_DESCRIPTOR_UUID },
+                        uuid: esp_bt_uuid_t__bindgen_ty_1 {
+                            uuid16: CCC_DESCRIPTOR_UUID,
+                        },
                     };
                     esp_ble_gatts_add_char_descr(
                         p.service_handle,
@@ -438,7 +492,10 @@ unsafe extern "C" fn gatts_event_handler(
                 CONNECTED.store(true, Ordering::Relaxed);
 
                 // Request security
-                esp_ble_set_encryption(p.remote_bda.as_ptr() as *mut u8, esp_ble_sec_act_t_ESP_BLE_SEC_ENCRYPT_MITM);
+                esp_ble_set_encryption(
+                    p.remote_bda.as_ptr() as *mut u8,
+                    esp_ble_sec_act_t_ESP_BLE_SEC_ENCRYPT_MITM,
+                );
             }
         }
         esp_gatts_cb_event_t_ESP_GATTS_DISCONNECT_EVT => {
@@ -450,7 +507,8 @@ unsafe extern "C" fn gatts_event_handler(
         esp_gatts_cb_event_t_ESP_GATTS_READ_EVT => {
             if !param.is_null() {
                 let p = &(*param).read;
-                let report_map_handle = HID_REPORT_MAP_HANDLE.load(Ordering::Relaxed);
+                let report_map_handle =
+                    HID_REPORT_MAP_HANDLE.load(Ordering::Relaxed);
                 let info_handle = HID_INFO_HANDLE.load(Ordering::Relaxed);
                 let report_handle = HID_REPORT_HANDLE.load(Ordering::Relaxed);
 
@@ -474,13 +532,18 @@ unsafe extern "C" fn gatts_event_handler(
                         let remaining = &data[offset..];
                         let len = remaining.len().min(22); // BLE MTU limit
                         rsp.attr_value.len = len as u16;
-                        rsp.attr_value.value[..len].copy_from_slice(&remaining[..len]);
+                        rsp.attr_value.value[..len]
+                            .copy_from_slice(&remaining[..len]);
                     }
-                    info!("Read Report Map, offset: {}, len: {}", offset, rsp.attr_value.len);
+                    info!(
+                        "Read Report Map, offset: {}, len: {}",
+                        offset, rsp.attr_value.len
+                    );
                 } else if p.handle == info_handle {
                     // HID Information (4 bytes)
                     rsp.attr_value.len = HID_INFO.len() as u16;
-                    rsp.attr_value.value[..HID_INFO.len()].copy_from_slice(HID_INFO);
+                    rsp.attr_value.value[..HID_INFO.len()]
+                        .copy_from_slice(HID_INFO);
                     info!("Read HID Info");
                 } else if p.handle == report_handle {
                     // HID Report - return empty report
