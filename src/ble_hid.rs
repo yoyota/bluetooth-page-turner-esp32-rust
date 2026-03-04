@@ -3,7 +3,7 @@ use esp32_nimble::{
     BLEDevice, BLEHIDDevice, BLEServer,
 };
 use log::info;
-use std::sync::Arc;
+use std::{sync::Arc, thread, time::Duration};
 
 const KEYBOARD_ID: u8 = 0x01;
 
@@ -43,7 +43,7 @@ pub struct BleKeyboard {
 }
 
 impl BleKeyboard {
-    pub fn new(name: &str) -> anyhow::Result<Self> {
+    pub fn new(name: &str, on_connect: impl FnMut(&mut BLEServer, &esp32_nimble::BLEConnDesc) + Send + Sync + 'static) -> anyhow::Result<Self> {
         let device = BLEDevice::take();
 
         device
@@ -53,6 +53,7 @@ impl BleKeyboard {
             .resolve_rpa();
 
         let server = device.get_server();
+        server.on_connect(on_connect);
         let mut hid = BLEHIDDevice::new(server);
 
         let input = hid.input_report(KEYBOARD_ID);
@@ -93,7 +94,7 @@ impl BleKeyboard {
         let report = [0u8, 0, keycode, 0, 0, 0, 0, 0];
         self.input.lock().set_value(&report).notify();
 
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
 
         // Key release
         let release = [0u8; 8];
