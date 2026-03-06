@@ -5,34 +5,12 @@ use log::{debug, info, warn};
 use std::{thread, time::Duration};
 
 mod ble_hid;
+mod touch;
 
 use ble_hid::BleKeyboard;
 
 const KEY_PAGE_DOWN: u8 = 0x4E;
-const TOUCH_THRESHOLD: u16 = 400;
-const TOUCH_PAD: u32 = esp_idf_sys::touch_pad_t_TOUCH_PAD_NUM0;
 const LED_GPIO: i32 = 2;
-
-fn init_touch_sensor() {
-    unsafe {
-        esp_idf_sys::touch_pad_init();
-        esp_idf_sys::touch_pad_set_voltage(
-            esp_idf_sys::touch_high_volt_t_TOUCH_HVOLT_2V7,
-            esp_idf_sys::touch_low_volt_t_TOUCH_LVOLT_0V5,
-            esp_idf_sys::touch_volt_atten_t_TOUCH_HVOLT_ATTEN_1V,
-        );
-        esp_idf_sys::touch_pad_config(TOUCH_PAD, 0);
-    }
-    info!("Touch sensor initialized on GPIO4");
-}
-
-fn read_touch() -> u16 {
-    let mut val: u16 = 0;
-    unsafe {
-        esp_idf_sys::touch_pad_read(TOUCH_PAD, &mut val);
-    }
-    val
-}
 
 fn init_led() {
     unsafe {
@@ -64,7 +42,8 @@ fn main() -> anyhow::Result<()> {
     Peripherals::take()?;
 
     init_led();
-    init_touch_sensor();
+    touch::init();
+    info!("Touch sensor initialized on GPIO4");
 
     let keyboard = BleKeyboard::new("BLE PageTurner", on_connect)?;
     info!("BLE Keyboard initialized. Waiting for connection...");
@@ -77,10 +56,10 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let touch_val = read_touch();
+        let touch_val = touch::read();
         debug!("Touch value: {}", touch_val);
 
-        let touched = touch_val < TOUCH_THRESHOLD;
+        let touched = touch::is_touched(touch_val);
         if touched && !was_touched {
             info!("Touch detected (val: {})", touch_val);
             if let Err(e) = keyboard.send_key(KEY_PAGE_DOWN) {
@@ -91,5 +70,51 @@ fn main() -> anyhow::Result<()> {
         was_touched = touched;
 
         thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::touch::{is_touched, TOUCH_THRESHOLD};
+
+    #[test]
+    fn touched_when_value_below_threshold() {
+        assert!(is_touched(TOUCH_THRESHOLD - 1));
+    }
+
+    #[test]
+    fn not_touched_at_threshold() {
+        assert!(!is_touched(TOUCH_THRESHOLD));
+    }
+
+    #[test]
+    fn not_touched_above_threshold() {
+        assert!(!is_touched(TOUCH_THRESHOLD + 1));
+    }
+
+    #[test]
+    fn not_touched_at_max_value() {
+        assert!(!is_touched(u16::MAX));
+    }
+
+    #[test]
+    fn touched_at_zero() {
+        assert!(is_touched(0));
+    }
+
+    #[test]
+    fn debounce_logic_fires_only_on_rising_edge() {
+        // Key should only be sent once when transitioning from not-touched to touched.
+        let readings: &[u16] = &[500, 500, 100, 100, 100, 500, 100];
+        // expected: fire on index 2 and index 6 (rising edges)
+        let expected_fires: &[bool] = &[false, false, true, false, false, false, true];
+
+        let mut was_touched = false;
+        for (i, &val) in readings.iter().enumerate() {
+            let touched = is_touched(val);
+            let fires = touched && !was_touched;
+            assert_eq!(fires, expected_fires[i], "mismatch at reading index {i}");
+            was_touched = touched;
+        }
     }
 }
